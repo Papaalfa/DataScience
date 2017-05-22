@@ -1,0 +1,286 @@
+---
+title: "Capstone Milestone Report"
+author: "Sergey Zimin"
+date: "May the 22^nd^ 2017"
+output: 
+    html_document:
+        toc: true
+---
+```{r setup, include=FALSE}
+library(tm)
+library(readr)
+library(RWeka)
+library(hunspell)
+library(knitr)
+```
+
+```{r preprocDataLoad, include=FALSE, cache=TRUE}
+pathM <- "C:/Users/Sergey/Documents/R/Coursera-SwiftKey/"
+load(paste0(pathM, "texts.RData"))
+load(paste0(pathM, "cleanCorpora.RData"))
+load(paste0(pathM, "bigramCorpora.RData"))
+load(paste0(pathM, "trigramCorpora.RData"))
+```
+## Summary
+
+In the report I'm going to give a brief review of the data set provided for the Capstone Project of the John Hopkins Data Science specialization on Coursera.  
+The data set description can be found via the link: https://web.archive.org/web/20160726181056/http://www.corpora.heliohost.org:80/aboutcorpus.html  
+The data set can be downloaded from here: https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip  
+The goal of this report is to display that I've gotten used to working with the data and that I am on track to create the prediction algorithm.So I will check the corpora files parameters, then load the files into R and explore the corpora parameters.  
+
+## Corpora Files Processing and Basic Statistics 
+
+I've downloaded the corpora on May 16^th^ 2017. Only English corpora were processed then. In the table below you can observe the Corpora files names and sizes.  
+```{r filesTab, echo=FALSE}
+path <- paste0(pathM, "final/en_US/")
+fileNames <- list.files(path)
+
+## texts load
+# texts <- lapply(paste0(path, fileNames), read_lines)
+corpNames <- gsub("^.*\\.(.*)\\..*$", "\\1", fileNames)
+
+## files sizes
+sizes <- data.frame(names = corpNames       
+                    , files = fileNames
+                    , size = round(file.size(paste0(path, fileNames))/2^20, 2))
+names(sizes) <- c("Corpus", "File Name", "File Size, MB")
+kable(sizes)
+```
+
+*Table 1. Corpora files sizes.* 
+
+As we can see the files for news and blogs are almost the same size, when the twitter file is fairly smaller.
+
+## Corpora Details
+
+As it was mentioned in the description there are three different sources for the corpora data. These are blogs, news and twitter posts.  
+In line with my expectation the shortest documents are on average from twitter and the longest are from blogs.
+
+<style type="text/css">.table {width: 50%;}</style>
+```{r docsLengthTab, echo=FALSE, cache=TRUE}
+avgDocLen <- data.frame(corpus = names(texts)
+                        , avg.length = round(sapply(texts, function(x) mean(nchar(x))))
+                        , row.names = NULL)
+names(avgDocLen) <- c("Corpus", "Average Doc Length, Symbols")
+kable(avgDocLen)
+```
+
+*Table 2. Average length of documents per corpus.*
+
+In spite the file for twitter is the smallest, there are much more docs in there which is obviously due to the documents in twitter are much shorter on average than those in blogs or news.
+<style type="text/css">.table {width: 50%;}</style>
+```{r docsCountTab, echo=FALSE, cache=TRUE}
+docsCount <- data.frame(names(sapply(texts, length))
+                        , round(sapply(texts, length)/10^6, 3)
+                        , row.names = NULL)
+names(docsCount) <- c("Corpus", "Number of Docs, MIO")
+kable(docsCount)
+```
+
+*Table 3. Number of documents (lines) per corpus.*
+
+The plot below shows the same figures as the table above just to illustrate the difference between number of documents from the different sources.  
+```{r docsCountPlot, echo=FALSE, cache=TRUE}
+barplot(sapply(texts, length)/10^6
+        , xlab = "Text Source"
+        , ylab = "Number of Docs, MIO"
+        , main = "Number of Docs by Text Source"
+        , col = "gray50"
+        , border = "gray50")
+```
+
+*Figure 1. Number of documents (lines) per corpus.*
+
+## Futher Corpora Processing and Details Exploration
+
+To conduct the exploratory analysis using reasonable resourses, I sampled the data set to 10% of it's initial volume. For each blogs, news and twitter corpora I used [sample](https://stat.ethz.ch/R-manual/R-devel/library/base/html/sample.html) function from the base R with size parameter equal to 10% of a corpus docs quantity. Then I've saved the resulting data in a new file for further exploration. I've also removed all the characters that are not in the ASCII set to avoid issues with the future processing.
+To obtain the next statistics I've used a [tm package](https://cran.r-project.org/web/packages/tm/index.html) to convert the text data into a special "corpus" class so it was easier to clean the data and perform the analysis.
+
+I've cleaned the texts from punctuations, spare white spaces, upper letters and stop words using the tm_map function from the tm package with parameters *removePunctuation, stripWhitespace, content_transformer(tolower) and removeWords, stopwords("en")* in accordance.
+
+Here is the quantities of words per corpus left after sampling and clearing
+```{r FreqsCalc, echo=FALSE, cache=TRUE}
+## Frequencies of words per corpus calculation
+frequencies <- function(corpus) {
+    dtm <- as.matrix(DocumentTermMatrix(corpus))    
+    freqs <- sort(colSums(dtm), decreasing = TRUE)
+    frdf <- data.frame(word = names(freqs), count = freqs)
+}
+
+freqs <- lapply(cleanCorpora, frequencies)
+```
+
+```{r WordsCountTab, echo=FALSE, cache=TRUE}
+wordsCount <- data.frame(names(freqs)
+                        , round(sapply(freqs, function(x) sum(x[["count"]]))/10^6, 3)
+                        , row.names = NULL)
+names(wordsCount) <- c("Corpus", "Number of Words, MIO")
+kable(wordsCount)
+```
+
+*Table 3. Number of words per sampled corpus.*
+
+After the clearance I wanted to check what are the top 30 used words, bi-grams and tri-grams for each of the corpora.
+
+To build the words frequencies plot I've created a Document Term Matrix with the [DocumentTermMatrix](https://www.rdocumentation.org/packages/tm/versions/0.6-2/topics/TermDocumentMatrix) function from the [tm package](https://cran.r-project.org/web/packages/tm/index.html) and then took the columns sums of the matrix to obtain the most frequent words per corpus. You can see the resulting plot below.
+```{r WordsTops, echo=FALSE, cache=TRUE}
+par(mfrow=c(1,3))
+plotFreqs <- function(freqName) {
+    bplot <- barplot(rev(freqs[[freqName]]$count[1:30])
+                     , horiz = TRUE
+                     , col = "gray50"
+                     , border = "gray50"
+                     , ylab = "Word"
+                     , xlab = "Count"
+                     , main = sprintf("Top 30 of Words Counts in %s", freqName))
+    text(bplot
+         , labels=rev(freqs[[freqName]]$word[1:30])
+         , adj = c(1.3)
+         , xpd = TRUE)
+    grid(NULL, NA, col = "lightgray", lty=2)
+}
+
+freqsPlots <- lapply(names(freqs), plotFreqs)
+par(mfrow=c(1,1))
+```
+
+*Figure 2. Top 30 for words frequencies per corpus.*
+
+To obtain tops for the n-grams I've used [TermDocumentMatrix](https://www.rdocumentation.org/packages/tm/versions/0.6-2/topics/TermDocumentMatrix) function from the [tm package](https://cran.r-project.org/web/packages/tm/index.html) together with [NGramTokenizer](https://cran.r-project.org/web/packages/RWeka/RWeka.pdf) function from the [RWeka package](https://cran.r-project.org/web/packages/RWeka/RWeka.pdf).
+
+```{r NgramsFunction, include=FALSE}
+plotNgrams <- function(ngramName, corpora) {
+    bplot <- barplot(rev(corpora[[ngramName]]$frequency[1:30])
+                     , horiz = TRUE
+                     , col = "gray50"
+                     , border = "gray50"
+                     , ylab = ""
+                     , xlab = ""
+                     , xaxt = 'n'
+                     , main = sprintf("Top 30 of N-grams in %s", ngramName)
+                     , mgp=c(2.5,0.5,0))
+    ticks <- seq.int(0
+                     , round(max(corpora[[ngramName]]$frequency[1:25])/100)*100
+                     , round(max(corpora[[ngramName]]$frequency[1:25])/100)*100/5)
+    axis(side = 1, at = ticks, xpd = T)
+    text(x = par("usr")[1]
+         , y = bplot
+         , labels=rev(corpora[[ngramName]]$word[1:30])
+         , xpd = TRUE
+         , pos = 2)
+    abline(v = ticks, col = "lightgray", lty = 2)
+    title(ylab = "N-gram", line = par("mar")[2] - 2)
+    title(xlab = "Count", line = 2)
+    box(col = "lightgray")
+}
+
+mymfrow <- par("mfrow")
+mymar <- par("mar")
+myxpd <- par("xpd")
+```
+
+You can see top 30 for bi-grams per corpora in the plot below.
+```{r BigramsTops, echo=FALSE, cache=TRUE, fig.width=10}
+## bigramsk
+par(mfrow=c(1,3), mar=c(4,8,2,2), xpd=F)
+ngramsPlots <- lapply(names(bigramCorpora), plotNgrams, corpora = bigramCorpora)
+## возвращаю параметры
+par(mfrow=mymfrow, mar=mymar, xpd=myxpd)
+```
+
+*Figure 3. Top 30 for bi-grams per corpus.*
+
+In the next plot top-30 for tri-grams per corpora are shown.
+```{r TrigramsTops, echo=FALSE, cache=TRUE, fig.width=10}
+## trigramsh
+par(mfrow=c(1,3), mar=c(4,12.5,2,2), xpd=F)
+ngramsPlots <- lapply(names(trigramCorpora), plotNgrams, corpora = trigramCorpora)
+## возвращаю параметры
+par(mfrow=mymfrow, mar=mymar, xpd=myxpd)
+```
+
+*Figure 4. Top 30 for tri-grams per corpus.*
+
+From the statistics above I can see that there are mostly different top frequent words and n-grams in blogs, news and twitter posts. This means it makes sense to use differently trained models for different types of input texts.  
+I can also see that not all the stop words that makes sense to remove from my perspective are filtered by stopwords("en") expression. Also I guess that for purpose of next word prediction task a totally different stop words list could be taken.
+
+## Additional Exploration
+
+Finally I wanted to answer 2 questions from the course materials. These are:  
+1. How many unique words do you need in a frequency sorted dictionary to cover 50% of all word instances in the language? 90%?  
+2. How do you evaluate how many of the words come from foreign languages?  
+
+For the first question I've just checked cumulative sums for the unique words ordered by frequency per corpus to find at what points these sums get to 50% and 90% of total unique words in a corpus.
+```{r echo=FALSE, cache=TRUE}
+# How many unique words do you need in a frequency sorted dictionary to cover
+# 50% of all word instances in the language? 90%?
+words2cover <- function(df, percents) {
+    df$share <- cumsum(df$count / sum(df$count))
+    wordsQty <- sapply(percents, function(share) {nrow(df[df$share <= share, ])})
+    names(wordsQty) <- paste0(percents*100, "%")
+    wordsQty
+}
+
+lst <- lapply(freqs, words2cover, percents = c(.5, .9))
+words2cover <- data.frame(names(lst$blogs)
+                          , lst$blogs
+                          , lst$news
+                          , lst$twitter
+                          , row.names = NULL)
+names(words2cover) <- c("Cover percents", "Blogs", "News", "Twitter")
+kable(words2cover)
+```
+
+*Table 5. Number of unique words needed to cover 50% and 90% of all word instances.*
+
+From the table above I can make a conclusion that may be the language used in twitter posts is poorer than the one for blogs and the language of news is the reachest from all three.  
+
+I do not have a clear vision right now on how to answer the second question. The first approach I can suggest is to check what are shares of words that are not in the English dictionary. I've used the hunspell function from the [hunspell package](https://cran.r-project.org/web/packages/hunspell/index.html) for this.
+```{r echo=FALSE, cache=TRUE}
+# How do you evaluate how many of the words come from foreign languages?
+foreignWS <- function(df) {
+    length(unlist(hunspell(as.character(df$word))))/length(df$word)  
+}
+
+foreignWords <- data.frame(names(freqs)
+                           , paste0(round(sapply(freqs, foreignWS)*100), "%")
+                           , row.names = NULL)
+names(foreignWords) <- c("Corpus", "Share of Words not in the Dictionary")
+kable(foreignWords, align = c("l","r"))
+```
+
+*Table 6. Shares of words that are not in the English dictionary.*
+
+From the figures above I can suggest that in twitter they use more foreign words than in news or blogs (though the difference observed could also be caused by there are more grammar mistakes taken in twitter).
+
+## Next Steps in Prediction Model Developing
+
+### Model Developing Further Steps
+
+In the model developing I'm going to support myself with the questions and tips from [Task 3 of Week 2 of the course](https://www.coursera.org/learn/data-science-project/supplement/2IiM9/task-3-modeling). I would consider the next questions:
+
+1. How can you efficiently store an n-gram model (think Markov Chains)? _**To store the n-gram model efficiently, each word should depend on n-1 preceding words only.**_
+2. How can you use the knowledge about word frequencies to make your model smaller and more efficient?  _**I suppose the model to consider not more the 3 n-th words for each unique 1 to n-1 sets. For example in case there are 4 different n-grams in the corpus: "weather is good", "weather is bad", "weather is nice", "weather is ok" - only 3 of them to be taken into consideration - the one with the lowest frequency in the corpus would be thrown away.**_
+3. How many parameters do you need (i.e. how big is n in your n-gram model)? _**As the samples corpora contain about 2 millions of words each, the full ones should have about couple of tens millions per corpus. So I believe n = 3 is an appropriate n for the model.**_ 
+4. Can you think of simple ways to "smooth" the probabilities (think about giving all n-grams a non-zero probability even if they aren't observed in the data) ?  _**As it is suggested in question 6 it makes sence to use a back-off model for the smoothing. I would also consider a simple add-one smoothing as it is very clear in terms of effect.**_
+5. How do you evaluate whether your model is any good?  _**To evaluate the model's quality we can feed the model with a new text with some words missed so the model to predict these words and we could check then what would be a share of words predicted correctly.**_
+6. How can you use backoff models to estimate the probability of unobserved n-grams? _**In case there is no next word a model can predict for a certain n-gram an (n-1)-gram prediction should be used instead.**_
+
+### Shiny App
+
+For the Shiny app I suppose to have a two windowed interface so one is able to type into a window placed in the left part and after a spacebar is pressed there are some suggested (predicted) words appear in the right placed window. The number of predicted words could be from 1 to 3. They could be shown from top to down of the window in an order of their predicted probability (the one with the highest probability on the top and so on).  
+There also could be a drop down list somewhere in the application interface to switch between different input types: blog, news or twitter.
+
+## References
+
+### R packages used for the report preparation:
+
+* tm, https://cran.r-project.org/web/packages/tm/index.html
+* readr, https://cran.r-project.org/web/packages/readr/index.html
+* RWeka, https://cran.r-project.org/web/packages/RWeka/index.html
+* hunspell, https://cran.r-project.org/web/packages/hunspell/index.html
+* knitr, https://cran.r-project.org/web/packages/knitr/index.html
+
+### Coding
+
+All the coding is intentionally not shown in this report in accordance with the task conditions. In case you would like to odserve the scripts used to create the report you can find them in the github repo via this link: https://github.com/Papaalfa/DataScience
